@@ -1,0 +1,334 @@
+# vim: filetype=yaml.ansible
+---
+- name: Install Foreman and Katello (Full Setup)
+  hosts: all
+  become: true
+  become_user: root
+  vars:
+    foreman_admin: "admin"
+    foreman_admin_password: "admin"
+    foreman_hostname: foreman
+    foreman_location: lan
+    foreman_organization: lab
+    foreman_interface: enp1s0
+    foreman_ip: "192.168.122.111"
+    foreman_ip_base: "192.168.122"
+    subnet_name: libvirt-nat
+    libvirt_name: homestate
+    root_passwd: 1qazxsw2
+    os_create: Fedora
+    os_version: 43
+    hostgroup_create: lazy
+    foreman_packages:
+      - foreman-discovery-image-service-tui
+      - foreman-discovery-image-service
+      - foreman-installer-katello
+      - foreman-libvirt
+      - virt-install
+      - vim
+
+  tasks:
+    - name: Ustaw nazwe hosta
+      ansible.builtin.hostname:
+        name: "foreman.{{ foreman_organization}}.{{ foreman_location}}"
+      tags:
+        - ins
+    - name: Insert line at beginning
+      ansible.builtin.lineinfile:
+        path: /etc/hosts
+        line: "{{ foreman_ip }}  {{ foreman_hostname }}.{{ foreman_organization }}.{{ foreman_location }} {{ foreman_hostname }}"
+        insertafter: BOF
+      tags:
+        - ins
+
+    - name: Install Foreman release RPM
+      ansible.builtin.command: dnf -y install https://yum.theforeman.org/releases/3.16/el9/x86_64/foreman-release.rpm
+      tags:
+        - ins
+    - name: Install Katello release RPM
+      ansible.builtin.command:
+        cmd: dnf -y install https://yum.theforeman.org/katello/4.18/katello/el9/x86_64/katello-repos-latest.rpm
+      tags:
+        - ins
+
+    - name: Download the correct Katello GPG key
+      ansible.builtin.get_url:
+        url: https://theforeman.org/static/keys/E8C5B839A994276DB61B0228EF5D6BD3A8356411.pub
+        dest: /etc/pki/rpm-gpg/RPM-GPG-KEY-katello
+        mode: "0644"
+      tags:
+        - ins
+
+    - name: Import Katello GPG key
+      ansible.builtin.command:
+        cmd: rpm --import /etc/pki/rpm-gpg/RPM-GPG-KEY-katello
+      args:
+        creates: /etc/pki/rpm-gpg/.imported-katello-key
+      tags:
+        - ins
+
+    - name: Mark GPG key import (idempotency helper)
+      ansible.builtin.copy:
+        content: "Katello GPG key imported\n"
+        dest: /etc/pki/rpm-gpg/.imported-katello-key
+        mode: "0644"
+      tags:
+        - ins
+
+    - name: Install puppet release RPM
+      ansible.builtin.command: dnf -y install https://yum.puppet.com/puppet8-release-el-9.noarch.rpm
+      tags:
+        - ins
+
+    - name: Install required packages
+      ansible.builtin.dnf:
+        name: "{{ foreman_packages }}"
+        state: present
+      tags:
+        - ins
+
+    - name: Open standard firewall services for Foreman
+      ansible.posix.firewalld:
+        service: "{{ item }}"
+        state: enabled
+        permanent: true
+        immediate: true
+      loop:
+        - mqtt
+        - tftp
+        - dns
+        - http
+        - https
+        - dhcp
+        - puppetmaster
+      tags:
+        - ins
+    - name: Dodaj porty do firewall 8000 tcp
+      ansible.posix.firewalld:
+        port: "{{ item }}"
+        permanent: true
+        state: enabled
+      loop:
+        - 8000/tcp
+        - 9090/tcp
+      tags:
+        - ins
+
+    - name: Konfiguruj Foreman
+      ansible.builtin.command: >
+        foreman-installer
+          --scenario katello
+          --enable-foreman-plugin-bootdisk
+          --enable-foreman-plugin-templates
+          --enable-foreman-plugin-default-hostgroup
+          --enable-foreman-plugin-ansible
+          --enable-foreman-plugin-dhcp-browser
+          --enable-foreman-plugin-openscap
+          --enable-foreman-proxy
+          --enable-foreman-cli
+          --enable-foreman-cli-ansible
+          --enable-foreman-cli-bootdisk
+          --enable-foreman-cli-discovery
+          --enable-foreman-cli-kubevirt
+          --enable-foreman-cli-openscap
+          --enable-foreman-cli-ssh
+          --enable-foreman-cli-tasks
+          --enable-foreman-cli-templates
+          --enable-foreman-plugin-ansible
+          --enable-foreman-plugin-bootdisk
+          --enable-foreman-plugin-default-hostgroup
+          --enable-foreman-plugin-dhcp-browser
+          --enable-foreman-plugin-discovery
+          --enable-foreman-plugin-expire-hosts
+          --enable-foreman-plugin-git-templates
+          --enable-foreman-plugin-kubevirt
+          --enable-foreman-plugin-openscap
+          --enable-foreman-plugin-proxmox
+          --enable-foreman-plugin-remote-execution
+          --enable-foreman-plugin-remote-execution-cockpit
+          --enable-foreman-plugin-rescue
+          --enable-foreman-plugin-snapshot-management
+          --enable-foreman-plugin-templates
+          --enable-foreman-compute-libvirt
+          --enable-foreman-compute-vmware
+          --enable-foreman-proxy-plugin-ansible
+          --enable-foreman-proxy-plugin-discovery
+          --enable-foreman-proxy-plugin-openscap
+          --foreman-proxy-dns true
+          --foreman-proxy-dns-managed true
+          --foreman-proxy-dns-provider nsupdate
+          --foreman-proxy-dns-interface "{{ foreman_interface }}"
+          --foreman-proxy-dns-zone "{{ foreman_organization }}"."{{ foreman_location }}"
+          --foreman-proxy-dns-reverse 122.168.192.in-addr.arpa
+          --foreman-proxy-dns-forwarders "1.1.1.1"
+          --foreman-proxy-dhcp true
+          --foreman-proxy-dhcp-managed true
+          --foreman-proxy-dhcp-provider isc
+          --foreman-proxy-dhcp-interface "{{ foreman_interface }}"
+          --foreman-proxy-dhcp-gateway 192.168.122.1
+          --foreman-proxy-dhcp-nameservers 192.168.122.111
+          --foreman-proxy-dhcp-range "192.168.122.50 192.168.122.200"
+          --foreman-proxy-dhcp-pxeserver 192.168.122.111
+          --foreman-proxy-tftp true
+          --foreman-proxy-httpboot true
+          --foreman-proxy-templates true
+          --foreman-proxy-tftp-servername 192.168.122.111
+          --foreman-initial-organization ""{{ foreman_organization }}""
+          --foreman-initial-location ""{{ foreman_location }}""
+          --foreman-initial-admin-username "{{ foreman_admin }}"
+          --foreman-initial-admin-password "{{ foreman_admin_password }}"
+      tags:
+        - in
+
+    - name: Install Epel
+      ansible.builtin.command: dnf config-manager --set-enabled crb
+      tags:
+        - insel
+    - name: Install EPEL
+      ansible.builtin.dnf:
+        name: epel-release
+        state: present
+      tags:
+        - insel
+
+    - name: Klucze do foremana do kvm
+      ansible.builtin.command: >
+        # LIbvirt dostep do kvm
+        su foreman -s /bin/bash
+        ssh-keygen
+        ssh-copy-id root@192.168.122.1
+      tags:
+        - 2sin
+    - name: Konfiguruj dostep do KVM gospodarza
+      ansible.builtin.command: >
+        hammer compute-resource create
+        --name "{{ libvirt_name }}"
+        --provider "Libvirt"
+        --display-type "VNC"
+        --url "qemu+ssh://root@192.168.122.1/system"
+        --set-console-password false
+      tags:
+        - sins
+
+    - name: Utwórz domenę
+      ansible.builtin.command: >
+        hammer domain create
+          --name "{{ foreman_organization }}"."{{ foreman_location }}"
+          --dns foreman."{{ foreman_organization }}"."{{ foreman_location }}"
+          --organizations "{{ foreman_organization }}"
+          --locations "{{ foreman_location }}"
+      tags:
+        - sins
+
+    - name: Utwórz subnet
+      ansible.builtin.command: >
+        hammer subnet create
+        --name "{{ subnet_name }}"
+        --network 192.168.122.0
+        --mask 255.255.255.0
+        --gateway 192.168.122.1
+        --dns-primary 192.168.122.111
+        --ipam DHCP
+        --domains "{{ foreman_organization }}.{{ foreman_location }}"
+        --dhcp foreman."{{ foreman_organization }}.{{ foreman_location }}"
+        --dns foreman."{{ foreman_organization }}.{{ foreman_location }}"
+        --organizations "{{ foreman_organization }}"
+        --locations "{{ foreman_location }}"
+        --tftp foreman."{{ foreman_organization }}.{{ foreman_location }}"
+        --httpboot-id 1
+        --template-id 1
+      tags:
+        - sins
+
+    - name: Utwórz architecture
+      ansible.builtin.command: >
+        hammer architecture create --name x86_64
+      tags:
+        - sins
+
+    - name: Utwórz medium
+      ansible.builtin.command: >
+        hammer medium create
+          --name "Fedora 42 Everything x86_64"
+          --path "https://download.fedoraproject.org/pub/fedora/linux/releases/42/Everything/x86_64/os/"
+          --os-family Redhat
+      tags:
+        - sin
+
+        # OS_ID=$(hammer os list | awk -F'|' '/Fedora  *42/ {gsub(/ /,"",$1); print $1; exit}')
+        # OS_hammer os add-medium --id $OS_ID --medium "Fedora 42 Everything x86_64" 2>/dev/null || true
+        # hammer os add-ptable --id $OS_ID --ptable "Kickstart default" 2>/dev/null || true
+        # TITLE=$(hammer os info --id $OS_ID | awk -F':' '/Title/ {sub(/^ +/,"",$2); print $2}')
+        # for T in "Kickstart default" "Kickstart default finish" "Kickstart default iPXE" "Kickstart default PXELinux"; do
+        # hammer os add-template --id $OS_ID --template "$T" 2>/dev/null || true
+        # done
+        # hammer os set-default-template --id $OS_ID --config-template "Kickstart default"        2>/dev/null || true
+        # hammer os set-default-template --id $OS_ID --config-template "Kickstart default iPXE"   2>/dev/null || true
+        # hammer os set-default-template --id $OS_ID --config-template "Kickstart default PXELinux" 2>/dev/null || true
+    #
+    - name: Utwórz definicje systemu opercyjnego
+      ansible.builtin.command: >
+        hammer os create
+         --name {{ os_create }}
+         --major {{ os_version }}
+         --family Redhat
+         --architectures x86_64
+         --media "Fedora 42 Everything x86_64"
+      tags:
+        - sin
+
+    - name: Utwórz definicje systemu opercyjnego
+      ansible.builtin.shell: |
+        #hammer os add-ptable ist | awk -F'|' '/Fedora  *42/ {gsub(/ /,"",$1); print $1; exit}')
+        #OS_hammer os add-medium --id $OS_ID --medium "Fedora 42 Everything x86_64" 2>/dev/null || true
+        #hammer os add-ptable --id $OS_ID --ptable "Kickstart default" 2>/dev/null || true
+        #TITLE=$(hammer os info --id $OS_ID | awk -F':' '/Title/ {sub(/^ +/,"",$2); print $2}')
+        #for T in "Kickstart default" "Kickstart default finish" "Kickstart default iPXE" "Kickstart default PXELinux"; do
+        #hammer os add-template --id $OS_ID --template "$T" 2>/dev/null || true
+        #done
+        #hammer os set-default-template --id $OS_ID --config-template "Kickstart default"        2>/dev/null || true
+        #hammer os set-default-template --id $OS_ID --config-template "Kickstart default iPXE"   2>/dev/null || true
+        #hammer os set-default-template --id $OS_ID --config-template "Kickstart default PXELinux" 2>/dev/null || true--title "{{ os_create }} {{ os_version }}" --partition-table "Kickstart default"
+        hammer os set-default-template --id 3 --config-template "Kickstart default"        2>/dev/null || true
+        hammer os set-default-template --id 3 --config-template "Kickstart default iPXE"   2>/dev/null || true
+        hammer os set-default-template --id 3 --config-template "Kickstart default PXELinux" 2>/dev/null || true--title "{{ os_create }} {{ os_version }}" --partition-table "Kickstart default"
+      args:
+        executable: /bin/shell
+      tags:
+        - 7ssin
+
+    - name: Utwórz grupę hosta
+      ansible.builtin.command: >
+        hammer hostgroup create
+        --name {{ hostgroup_create }}
+        --subnet {{ subnet_name }}
+        --domain "{{ foreman_organization}}"."{{ foreman_location}}"
+        --architecture x86_64
+        --operatingsystem "{{ os_create}} {{ os_version }}"
+        --medium "Fedora 42 Everything x86_64"
+        --partition-table "Kickstart default"
+        --organization "{{ foreman_organization}}"
+        --location "{{ foreman_location}}"
+        --root-password "{{ root_passwd }}"
+        --medium "Fedora 42 Everything x86_64"
+        --pxe-loader "PXELinux BIOS"
+        --compute-resource {{ libvirt_name }}
+      tags:
+        - 2sins
+
+    - name: Create host in Foreman
+      ansible.builtin.command: >
+        hammer host create
+          --name Wnode1."{{ foreman_organization}}"."{{ foreman_location}}"
+          --enabled true
+          --hostgroup {{ hostgroup_create }} 
+          --managed true
+          --build true
+          --compute-resource {{ libvirt_name }}
+          --organization "{{ foreman_organization}}"
+          --location "{{ foreman_location}}"
+          --volume="pool_name=default,capacity=20G,format_type=qcow2"
+          --interface "primary=true,managed=true,provision=true,domain="{{ foreman_organization}}"."{{ foreman_location}}",subnet=libvirt-nat,compute_network=default,compute_type=network"
+          --compute-attributes="cpus=6,memory=4096,start=1"
+      tags:
+        - 6sins
